@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/esirk/net-monitor/data_access"
+	"github.com/esirk/net-monitor/types"
 	"golang.org/x/net/icmp"
 	"golang.org/x/net/ipv4"
 )
@@ -16,17 +18,25 @@ import (
 const target = "google.com"
 
 func main() {
+	ch := make(chan types.PingResult)
+
+	var targ string
+
+	flag.StringVar(&targ, "target", target, "Target to ping")
+	flag.Parse()
+
 	for {
 		time.Sleep(time.Second * 3)
-		state, ping_time := Ping(target)
-		data_access.SaveState(state, ping_time)
+		go Ping(targ, ch)
+		go data_access.SaveState(ch)
 	}
 }
 
-func Ping(target string) (state int, ping_time float64) {
+func Ping(target string, ch chan types.PingResult) {
 	ip, err := net.ResolveIPAddr("ip4", target)
 	if err != nil {
-		panic(err)
+		ch <- types.PingResult{State: 0, Ping_time: -1}
+		return
 	}
 	conn, err := icmp.ListenPacket("udp4", "0.0.0.0")
 	if err != nil {
@@ -44,7 +54,7 @@ func Ping(target string) (state int, ping_time float64) {
 	}
 	msg_bytes, err := msg.Marshal(nil)
 	if err != nil {
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: -1}
 		fmt.Printf("Error on Marshal %v\n", msg_bytes)
 		return
 	}
@@ -66,21 +76,27 @@ func Ping(target string) (state int, ping_time float64) {
 
 	if err != nil {
 		fmt.Printf("Got an Error on ReadFrom %v\n", err)
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: -1}
 		return
 	}
 	duration := time.Since(start)
-	x := duration.String()[:strings.Index(duration.String(), "ms")]
-	ping_time, err = strconv.ParseFloat(x, 64)
+	index := strings.Index(duration.String(), "ms")
+	if index == -1{
+		ch <- types.PingResult{State: 0, Ping_time: -1}
+		return
+	}
+
+	x := duration.String()[:index]
+	ping_time, err := strconv.ParseFloat(x, 64)
 	if err != nil {
 		fmt.Printf("Error on ParseFloat %v\n", err)
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: ping_time}
 		return
 	}
 	parsed_reply, err := icmp.ParseMessage(1, reply[:n])
 
 	if err != nil {
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: ping_time}
 		fmt.Printf("Error on ParseMessage %v after %v\n", err, ping_time)
 		return
 	}
@@ -89,17 +105,17 @@ func Ping(target string) (state int, ping_time float64) {
 	case 0:
 		// Got a reply so we can save this
 		fmt.Printf("Got Reply from %s after %v\n", target, ping_time)
-		state = 1
+		ch <- types.PingResult{State: 1, Ping_time: ping_time}
 	case 3:
 		fmt.Printf("Host %s is unreachable after %v\n", target, ping_time)
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: ping_time}
 		// Given that we don't expect google to be unreachable, we can assume that our network is down
 	case 11:
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: ping_time}
 		// Time Exceeded so we can assume our network is slow
 		fmt.Printf("Host %s is slow %v\n", target, ping_time)
 	default:
-		state = 0
+		ch <- types.PingResult{State: 0, Ping_time: ping_time}
 		// We don't know what this is so we can assume it's unreachable
 		fmt.Printf("Host %s is unreachable %v\n", target, ping_time)
 	}
