@@ -4,10 +4,17 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/esirk/net-monitor/types"
 	"github.com/jackc/pgx/v4"
 )
 
-func SaveState(state int, ping_time float64) {
+func SaveState(ch chan types.PingResult) {
+	for result := range ch {
+		saveData(result.State, result.Ping_time)
+	}
+}
+
+func saveData(state int, ping_time float64) {
 	conn, err := pgx.Connect(context.Background(), "postgresql://bluetail:bluetail@localhost:5432/net_mon")
 	if err != nil {
 		fmt.Println("Error on Connect ", err)
